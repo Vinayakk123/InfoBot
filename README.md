@@ -2,194 +2,95 @@
 
 A retrieval-augmented generation (RAG) chatbot that answers questions about InfoBeans Technologies by grounding an LLM's responses in a local FAISS index built from your own documents.
 
+**Status:** working demo, containerized and ready to run. Not yet hardened for multi-user production use — see [docs/01-PROJECT_SUMMARY.md](docs/01-PROJECT_SUMMARY.md) for current limitations.
+
+![INFOBOT chat UI](image.png)
+
 ## Overview
 
-Large language models don't know anything about your private documents, and asking them to answer from memory alone invites hallucination. This project solves that by:
+Large language models don't know anything about your private documents, and asking them to answer from memory alone invites hallucination. INFOBOT solves that by ingesting local documents (PDF, Word, Excel, CSV, TXT, JSON) from a `data/` folder, splitting and embedding them locally into a FAISS vector index, and — at query time — retrieving the most relevant chunks and passing them as context to a Groq-hosted LLM, which answers using only that retrieved context. The whole flow is served through a Streamlit chat UI with source citations, so every answer stays traceable back to the original document, page, or row.
 
-1. Ingesting local documents (PDF, Word, Excel, CSV, TXT, JSON) from a `data/` folder.
-2. Splitting them into overlapping text chunks and embedding each chunk locally (no external embedding API).
-3. Storing those embeddings in a FAISS vector index on disk.
-4. At query time, embedding the user's question, retrieving the most similar chunks, and passing them as context to a Groq-hosted LLM, which answers using only that retrieved context.
-5. Serving the whole flow through a Streamlit chat UI with source citations, so answers stay traceable back to the original document, page, or row.
+## How Data Flows: Frontend to Backend (No API Layer)
 
-## Key Features
+There is no network API between the frontend and the RAG pipeline in this project. `streamlit_app.py` and `src/search.py` run in the **same Python process** — Streamlit calls `RAGSearch` methods as ordinary in-process function calls, not HTTP requests. There is no client/server split, no JSON serialization boundary, and no localhost port between "frontend" and "backend." The only real network call in the whole flow is the outbound HTTPS request `ChatGroq` makes to Groq's cloud API to run the LLM — that's a call *out* to a third party, not a call between this app's own frontend and backend.
 
-- **Multi-format ingestion**: PDF, TXT, CSV, XLSX, DOCX, and JSON files are all loaded recursively from `data/` ([src/data_loader.py](src/data_loader.py)).
-- **Local embeddings, no external embedding API**: uses `sentence-transformers` (`all-MiniLM-L6-v2`) so document content never leaves the machine during embedding ([src/embedding.py](src/embedding.py)).
-- **Persisted FAISS index**: exact L2 similarity search (`IndexFlatL2`) saved to `faiss_store/faiss.index` + `metadata.pkl`, so the index is built once and reloaded on subsequent runs ([src/vectorstore.py](src/vectorstore.py)).
-- **Context-grounded answers with a refusal path**: the LLM prompt explicitly instructs the model to say so if the retrieved context doesn't contain the answer, and the app returns "No relevant documents found." when retrieval comes back empty ([src/search.py](src/search.py)).
-- **Source citations in the UI**: every answer can be expanded to show the exact chunks used, their originating file, page/row number, and a heuristic relevance score ([streamlit_app.py](streamlit_app.py)).
-- **Cumulative token usage tracking**: the sidebar sums Groq's `usage_metadata` (prompt/completion/total tokens) across the saved conversation.
-- **Persisted chat history**: conversations survive app restarts via a local `chat_history.json` file.
-- **Configurable retrieval depth**: a sidebar slider lets the user change `top_k` (1–10 chunks) per session without restarting the app.
+### 1. The function Streamlit calls
 
-## How It Works
+[streamlit_app.py:265](streamlit_app.py#L265) calls:
 
-```
-data/ (PDF, TXT, CSV, XLSX, DOCX, JSON)
-        │  src/data_loader.py  (langchain_community loaders)
-        ▼
-   raw LangChain Documents
-        │  src/embedding.py  (RecursiveCharacterTextSplitter: chunk_size=1000, overlap=200)
-        ▼
-   text chunks
-        │  src/embedding.py  (SentenceTransformer "all-MiniLM-L6-v2")
-        ▼
-   embeddings (float32 vectors)
-        │  src/vectorstore.py  (FAISS IndexFlatL2 + pickled metadata)
-        ▼
-   faiss_store/ (faiss.index, metadata.pkl)          ← persisted on disk
-        │
-        │  ── at query time ──
-        ▼
-   user question → embedded → FAISS top-k search → matching chunks + metadata
-        │  src/search.py  (RAGSearch: prompt built from retrieved context)
-        ▼
-   Groq LLM (ChatGroq, llama-3.1-8b-instant) → grounded answer
-        │
-        ▼
-   streamlit_app.py → chat UI, source citations, token usage, persisted history
+```python
+RAGSearch.search_and_summarize_with_sources(query: str, top_k: int = 5, history: list[dict] = None) -> dict
 ```
 
-`app.py` is the ingestion/build entry point (run once, or whenever `data/` changes, to (re)build `faiss_store/`). `streamlit_app.py` is the actual user-facing chatbot and only ever *reads* from the index via `RAGSearch`.
+defined in [src/search.py:107](src/search.py#L107). (A second, simpler method, `search_and_summarize(query: str, top_k: int = 5) -> str`, exists for the `app.py` CLI entry point and returns only the answer text, with no history support — the Streamlit UI does not use it.)
 
-## Tech Stack
+### 2. Exact input
+
+- **`query`** — the raw user question string typed into `st.chat_input`, stripped of leading/trailing whitespace and validated to be non-empty and ≤ `MAX_QUERY_CHARS` (1000 chars) before the call is made ([streamlit_app.py:255-257](streamlit_app.py#L255-L257)).
+- **`top_k`** — an int from 1–10 (default 5), set by a sidebar slider ([streamlit_app.py:107](streamlit_app.py#L107)) and passed straight through as the number of chunks to retrieve from FAISS.
+- **`history`** — a capped, stripped list of prior `{"role", "content"}` turns, oldest first, built by `get_recent_history(st.session_state.messages)` ([streamlit_app.py:217](streamlit_app.py#L217)). It takes the last `MAX_HISTORY_EXCHANGES` (5) user/assistant exchanges and drops the `sources`/`usage` fields before passing them along. `None`/empty on the first turn of a conversation.
+
+### 3. Exact output
+
+`search_and_summarize_with_sources` returns a `dict` with four keys ([src/search.py:132-145](src/search.py#L132-L145)):
+
+| Key | Type | Contents |
+|---|---|---|
+| `answer` | `str` | The LLM-generated answer, or the literal fallback string `"No relevant documents found."` if retrieval returned no usable chunks (in which case the LLM is never called). |
+| `sources` | `list[dict]` | One entry per retrieved chunk: the chunk's loader metadata (`text`, `source`, and `page` or `row` depending on file type) plus a `distance` key (`float`, raw FAISS L2 distance — lower is more similar). Empty list when no context was found. |
+| `usage` | `dict` | `input_tokens`, `output_tokens`, `total_tokens` (all `int`), pulled from Groq's response metadata. Includes tokens spent condensing the query, if that step ran. All zero when no LLM call was made. |
+| `retrieval_query` | `str` | The query actually used for retrieval — equal to `query` when there's no history, or the standalone rewrite produced by query condensation when there is. |
+
+### 4. Call path, end to end
+
+1. User types a question into the `st.chat_input` box and submits it.
+2. `main()` calls `handle_user_query(rag, prompt, top_k)` ([streamlit_app.py:310](streamlit_app.py#L310)).
+3. `handle_user_query` builds `history` via `get_recent_history(st.session_state.messages)`, then calls `rag.search_and_summarize_with_sources(query, top_k=top_k, history=history)` directly — an in-process method call.
+4. Inside `RAGSearch`: if `history` is non-empty, `_condense_query()` first makes a Groq call to rewrite `query` into a standalone question (resolving pronouns/implicit references, e.g. "What does it do?" → "What does the InfoBeans Foundation do?"); this step is skipped on turn 1. `self.vectorstore.query(retrieval_query, top_k=top_k)` then embeds the (possibly rewritten) query with the local `SentenceTransformer` and runs a FAISS `IndexFlatL2` search, returning the top-k chunks with their metadata and distances.
+5. The retrieved chunk texts are joined into a context block. If the context is empty, `RAGSearch` returns the fallback dict immediately — no answer-generation LLM call (though a condensation call may already have happened). Otherwise it builds a prompt containing the resolved question, the context, and the conversation history (history is explicitly scoped in the prompt to interpreting the question only, not as a source of facts), and calls `self.llm.invoke([prompt])` on `ChatGroq`. This is the second Groq call for a follow-up turn, or the only one on turn 1 — both are outbound HTTPS requests to Groq's API, the only network calls in this whole flow.
+6. `RAGSearch` returns the `answer` / `sources` / `usage` / `retrieval_query` dict back to `handle_user_query`, still as a plain in-memory Python object.
+7. `handle_user_query` appends it to `st.session_state.messages` and persists the updated list to `chat_history.json`, then calls `st.rerun()`.
+8. On rerun, `render_chat_history()` and `render_sources()` render the answer text and an expandable source-citation list (file name, page/row, a heuristic relevance percentage derived from the FAISS distance) directly from that same dict — no additional fetch is needed, because it was never "fetched" over a network in the first place.
+
+**Latency/cost note:** because condensation and answer generation are separate Groq calls, a follow-up question (any turn after the first) makes two LLM calls instead of one. See [docs/03-TECH_STACK.md](docs/03-TECH_STACK.md) and [docs/05-TROUBLESHOOTING.md § Conversational memory](docs/05-TROUBLESHOOTING.md#conversational-memory).
+
+**Future improvement:** if this project is later split into a genuine frontend/backend architecture (e.g. a separate API service behind Streamlit or another UI), this in-process call to `search_and_summarize_with_sources` would become an HTTP request/response instead, and the `dict` documented above would become the JSON response body. That is not the current design — today it's a direct function call within one process.
+
+## Tech stack (summary)
+
+Full detail, rationale, and swap-in alternatives for each of these live in [docs/03-TECH_STACK.md](docs/03-TECH_STACK.md).
 
 | Component | Technology |
 |---|---|
-| Document loaders | `langchain-community` (`PyPDFLoader`, `TextLoader`, `CSVLoader`, `UnstructuredExcelLoader`, `Docx2txtLoader`, `JSONLoader`), `pypdf` |
-| Chunking | `langchain-text-splitters` (`RecursiveCharacterTextSplitter`) |
-| Embeddings | `sentence-transformers` (`all-MiniLM-L6-v2`, local, CPU) |
-| Vector store | `faiss-cpu` (`IndexFlatL2`) + `pickle` for chunk metadata |
+| Frontend | Streamlit |
 | LLM | Groq API via `langchain-groq` (`llama-3.1-8b-instant`) |
-| Frontend | `streamlit` |
-| Config/secrets | `python-dotenv` (`.env`) |
-| Numerics | `numpy` |
+| Embeddings | `sentence-transformers` (`all-MiniLM-L6-v2`), local, CPU |
+| Chunking | `langchain-text-splitters` `RecursiveCharacterTextSplitter` (1000 chars / 200 overlap) |
+| Vector store | `faiss-cpu` (`IndexFlatL2`) + pickled chunk metadata |
+| Document ingestion | PDF, TXT, CSV, XLSX, DOCX, JSON via `langchain-community` loaders |
+| Deployment | Docker (multi-stage build) + Docker Compose |
 
-## Project Structure
-
-```
-RAG chatbot IB/
-├── app.py                    # Build/load the FAISS index from data/, then run one example query
-├── main.py                   # Default uv-generated placeholder — not part of the RAG pipeline
-├── streamlit_app.py          # Streamlit chat UI — the actual frontend
-├── src/
-│   ├── data_loader.py        # load_all_documents(): recursive multi-format loader for data/
-│   ├── embedding.py          # EmbeddingPipeline: chunking + local sentence-transformer embeddings
-│   ├── vectorstore.py        # FaissVectorStore: build / save / load / query the FAISS index
-│   └── search.py             # RAGSearch: retrieval + Groq LLM prompting (answer/sources/usage)
-├── notebook/
-│   ├── document.ipynb        # Exploration: PyMuPDFLoader vs. pypdf PDF loading
-│   └── pdfloader.ipynb       # Exploration: Chroma vector store prototype (not used in production)
-├── data/                     # Source documents ingested by data_loader.py
-│   ├── pdf/                  # e.g. InfoBeans overview, sample RAG test document
-│   ├── text_files/           # e.g. machine_learning.txt, python_intro.txt
-│   └── vector_store*/        # Leftover Chroma DBs from notebook experiments (unused by production code)
-├── faiss_store/              # Generated: faiss.index + metadata.pkl (created by app.py)
-├── chat_history.json         # Generated: persisted Streamlit conversation history (gitignored)
-├── requirements.txt          # Verified, pinned runtime dependencies — source of truth for installs
-├── requirements-dev.txt       # Dev-only deps (Jupyter/notebook tooling)
-├── pyproject.toml            # uv project file — currently out of sync with real deps (see file's own notes)
-├── .python-version           # Pins 3.14 (see Known Issues — actual verified venv is 3.11)
-└── .env                       # GROQ_API_KEY (not committed; see .gitignore)
-```
-
-## Setup & Installation
-
-**Prerequisites:** Python 3.11 (see [Known Issues](#limitations--known-issues) about the `.python-version` mismatch), a [Groq API key](https://console.groq.com).
+## Quick start (Docker)
 
 ```bash
-# 1. Clone the repository
-git clone <this-repo-url>
-cd "RAG chatbot IB"
-
-# 2. Create and activate a virtual environment
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # macOS/Linux
-
-# 3. Install runtime dependencies (requirements.txt is the verified, working set)
-pip install -r requirements.txt
-# Optional, only needed for notebook/*.ipynb:
-pip install -r requirements-dev.txt
-
-# 4. Configure secrets
-echo GROQ_API_KEY=your_key_here > .env
-
-# 5. Add documents to ingest (PDF/TXT/CSV/XLSX/DOCX/JSON) under data/
-#    Two sample PDFs and two sample .txt files are already included.
-
-# 6. Build the FAISS index (creates faiss_store/)
-python app.py
-
-# 7. Launch the chatbot
-streamlit run streamlit_app.py
+cp .env.example .env
+# edit .env and set GROQ_API_KEY
+docker compose up --build
 ```
 
-The Streamlit app will refuse to start with a clear on-screen error if `GROQ_API_KEY` is missing, or if `faiss_store/` doesn't exist yet (it will tell you to run `python app.py` first).
+Then open **http://localhost:8501**. See [docs/04-SETUP.md](docs/04-SETUP.md) for the full setup guide, including first-run index building, the manual (non-Docker) install path, and a verification checklist.
 
-## Usage
+## Documentation
 
-Once running, ask questions in the chat box about whatever is in `data/`. Based on the sample documents shipped in this repo, example queries include:
+Read in this order:
 
-| Example query | Expected response |
-|---|---|
-| "What is InfoBeans' location?" | A short answer synthesized from the InfoBeans overview PDF, with an expandable "View sources" section showing the exact PDF page(s) used. |
-| "Summarize the InfoBeans overview document." | A concise summary grounded in the retrieved chunks from that PDF. |
-| "What is machine learning?" | An answer drawn from `data/text_files/machine_learning.txt`. |
-| A question with no matching content in `data/` | `"No relevant documents found."` — the app does not fall back to the model's own general knowledge. |
-
-Each response shows:
-- The generated answer.
-- An expandable **View sources** panel with the source file name, page/row, a heuristic relevance percentage, and a text preview of each retrieved chunk.
-- A running **token usage** total in the sidebar (prompt/completion/total tokens, summed across the saved session).
-
-  ![alt text](image.png)
-
-## Configuration
-
-### Environment variables (`.env`)
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `GROQ_API_KEY` | Yes | Groq API key used by `ChatGroq` in [src/search.py](src/search.py) to generate answers. Loaded via `python-dotenv`. Checked explicitly on startup in [streamlit_app.py](streamlit_app.py). |
-
-No other environment variables are read anywhere in the codebase; there is no `.env.example` file, so `.env` must be created manually as shown above.
-
-### Notable code-level constants (not env vars)
-
-These are hardcoded defaults and would require a code change (not a config file) to alter:
-
-| Constant | Location | Value |
-|---|---|---|
-| LLM model | `streamlit_app.py` (`LLM_MODEL`), `RAGSearch.__init__` default | `llama-3.1-8b-instant` |
-| Embedding model | `EmbeddingPipeline`, `FaissVectorStore`, `RAGSearch` defaults | `all-MiniLM-L6-v2` |
-| Chunk size / overlap | `EmbeddingPipeline.__init__` | 1000 chars / 200 overlap |
-| FAISS persist directory | `FaissVectorStore.__init__` default | `faiss_store` |
-| Default retrieved chunks | `streamlit_app.py` (`DEFAULT_TOP_K`) | 5 (user-adjustable 1–10 via sidebar) |
-| Max query length | `streamlit_app.py` (`MAX_QUERY_CHARS`) | 1000 characters |
-
-## Limitations / Known Issues
-
-- **Cold-start bug**: if `RAGSearch` is instantiated directly (not via `app.py` first) with no existing `faiss_store/` index, it hits `from data_loader import load_all_documents` in [src/search.py:15](src/search.py#L15), which is missing the `src.` prefix and raises `ModuleNotFoundError`. `streamlit_app.py` catches this specific case and shows a friendly message telling the user to run `python app.py` first, but the underlying import is still broken. The same missing-prefix bug exists in the `__main__` block of [src/vectorstore.py:71](src/vectorstore.py#L71).
-- **Dependency metadata is out of sync**: `pyproject.toml` / `uv.lock` are missing several packages the code actually imports (`faiss-cpu`, `sentence-transformers`, `langchain-groq`, etc. — see comments in `pyproject.toml`). `requirements.txt` is the verified, working dependency set; don't rely on `uv sync`/`uv.lock` until this is reconciled.
-- **Python version mismatch**: `.python-version` pins `3.14`, but the dependency set in `requirements.txt` was verified against a Python 3.11 virtual environment (per its header comment). Use 3.11 until this is reconciled.
-- **Exact (brute-force) vector search**: FAISS `IndexFlatL2` computes exact nearest neighbors with no approximate index (e.g. IVF/HNSW), which is fine for small document sets but won't scale to large corpora.
-- **Heuristic relevance score, not a calibrated probability**: the UI's "relevance" percentage is `1 / (1 + distance)` — a monotonic display cue only, explicitly documented as such in the code.
-- **Token usage is not a quota indicator**: the sidebar's token counter is a running sum of past usage from local history, not a live check against Groq's actual account limits (Groq's API doesn't expose that).
-- **No automated tests**: there is no test suite in the repository.
-- **No authentication**: the Streamlit app has no login/access control; anyone who can reach the running app can query it and consume the configured Groq API key's quota.
-- **Leftover artifacts in `data/`**: `data/vector_store*/` directories contain Chroma sqlite files from notebook prototyping; they are not read by any production code path (only PDF/TXT/CSV/XLSX/DOCX/JSON are globbed).
-
-## Roadmap / Future Improvements
-
-- Fix the `src.data_loader` / `src.vectorstore` import bugs so a true cold start (no existing index, instantiating `RAGSearch` directly) works without relying on `app.py` running first.
-- Reconcile `pyproject.toml` and `uv.lock` with the actual dependencies in `requirements.txt`, and align `.python-version` with the verified runtime.
-- Swap `IndexFlatL2` for an approximate index (e.g. IVF or HNSW) if the document corpus grows significantly.
-- Add an automated test suite (loader parsing, chunking boundaries, retrieval ranking).
-- Add basic authentication in front of the Streamlit app before any shared/public deployment.
-- Clean up or gitignore the leftover Chroma artifacts under `data/`.
+1. [docs/FRAMEWORK_GUIDE.md](docs/FRAMEWORK_GUIDE.md) — what's reusable framework vs. what's specific to this InfoBeans instance, and how to start a new client project from this base.
+2. [docs/01-PROJECT_SUMMARY.md](docs/01-PROJECT_SUMMARY.md) — what this is, the problem it solves, and how it works, in plain language.
+3. [docs/02-ARCHITECTURE.md](docs/02-ARCHITECTURE.md) — pipeline and deployment diagrams, component responsibilities, known limitations. See also this README's [How Data Flows: Frontend to Backend (No API Layer)](#how-data-flows-frontend-to-backend-no-api-layer) for the exact frontend↔pipeline call path.
+4. [docs/03-TECH_STACK.md](docs/03-TECH_STACK.md) — every technology choice in depth: what's used, why, alternatives, and known failure modes.
+5. [docs/04-SETUP.md](docs/04-SETUP.md) — step-by-step setup (Docker primary, manual alternative), environment variables, and a verification checklist.
+6. [docs/05-TROUBLESHOOTING.md](docs/05-TROUBLESHOOTING.md) — common failure symptoms and fixes, plus improvement areas identified during code review but not yet implemented.
 
 ## License
 
-No license file is currently included in this repository. All rights reserved by default until a license is added — add a `LICENSE` file (e.g. MIT, Apache-2.0) to make reuse terms explicit.
+No license file is currently included in this repository. All rights reserved by default until a license is added.

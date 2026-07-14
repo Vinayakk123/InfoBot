@@ -15,6 +15,9 @@ wheels/
 # Persisted chat history (runtime state, not source)
 chat_history.json
 
+# Application logs (runtime output, not source)
+logs/
+
 vector_store*/
 faiss_store/
 *.sqlite3

@@ -6,22 +6,22 @@ No retrieval or LLM logic is duplicated here.
 """
 
 import json
-import logging
 import os
 
 import streamlit as st
 from dotenv import load_dotenv
 
 from src.search import RAGSearch
+from src.logger import get_logger
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 APP_TITLE = "INFOBOT — InfoBeans RAG Assistant"
 MAX_QUERY_CHARS = 1000
 DEFAULT_TOP_K = 5
+MAX_HISTORY_EXCHANGES = 5
 
 # This app only ever talks to one Groq model, per project requirements.
 LLM_MODEL = "llama-3.1-8b-instant"
@@ -214,6 +214,23 @@ def init_session_state() -> None:
         st.session_state.messages = load_history()
 
 
+def get_recent_history(messages: list[dict]) -> list[dict]:
+    """Cap and strip session history down to what's safe to send to the LLM.
+
+    Takes the last MAX_HISTORY_EXCHANGES user/assistant exchanges and drops
+    the "sources"/"usage" fields (retrieval metadata, not conversation
+    content) so only {"role", "content"} pairs are passed along.
+
+    Args:
+        messages: Full st.session_state.messages, oldest first.
+
+    Returns:
+        A trimmed, stripped-down copy suitable for RAGSearch's `history` arg.
+    """
+    recent = messages[-(MAX_HISTORY_EXCHANGES * 2):]
+    return [{"role": m["role"], "content": m["content"]} for m in recent]
+
+
 def render_chat_history() -> None:
     """Replay all prior chat turns, including any stored source citations."""
     for msg in st.session_state.messages:
@@ -239,18 +256,22 @@ def handle_user_query(rag: RAGSearch, query: str, top_k: int) -> None:
         st.warning(f"Question is too long (max {MAX_QUERY_CHARS} characters).")
         return
 
+    history = get_recent_history(st.session_state.messages)
     st.session_state.messages.append({"role": "user", "content": query})
+    logger.info(f"User query received (top_k={top_k}, history_turns={len(history)}): {query!r}")
 
     with st.spinner("Retrieving relevant documents and generating an answer..."):
         try:
-            result = rag.search_and_summarize_with_sources(query, top_k=top_k)
+            result = rag.search_and_summarize_with_sources(query, top_k=top_k, history=history)
         except Exception:
-            logger.exception("RAG query failed")
+            logger.exception(f"RAG query failed for query: {query!r}")
             st.session_state.messages.append(
                 {"role": "assistant", "content": "⚠️ Sorry, I ran into an error answering that question. Please try again."}
             )
             save_history(st.session_state.messages)
             st.rerun()
+
+    logger.info(f"Query answered with {len(result['sources'])} source(s) cited")
 
     st.session_state.messages.append(
         {

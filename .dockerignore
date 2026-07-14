@@ -1,0 +1,16 @@
+.venv/
+**/__pycache__/
+*.py[cod]
+.git/
+.gitignore
+.env
+notebook/
+.claude/
+
+# Regenerable/runtime state — comes from a mounted volume, not the image
+faiss_store/
+chat_history.json
+data/vector_store/
+data/vector_store_clean/
+data/vector_store_runs/
+data/vector_store_test/
