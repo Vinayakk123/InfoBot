@@ -22,7 +22,7 @@ There is no network API between the frontend and the RAG pipeline in this projec
 RAGSearch.search_and_summarize_with_sources(query: str, top_k: int = 5, history: list[dict] = None) -> dict
 ```
 
-defined in [src/search.py:107](src/search.py#L107). (A second, simpler method, `search_and_summarize(query: str, top_k: int = 5) -> str`, exists for the `app.py` CLI entry point and returns only the answer text, with no history support — the Streamlit UI does not use it.)
+defined in [src/search.py:134](src/search.py#L134). (A second, simpler method, `search_and_summarize(query: str, top_k: int = 5) -> str`, exists for the `app.py` CLI entry point and returns only the answer text, with no history support — the Streamlit UI does not use it.)
 
 ### 2. Exact input
 
@@ -32,7 +32,7 @@ defined in [src/search.py:107](src/search.py#L107). (A second, simpler method, `
 
 ### 3. Exact output
 
-`search_and_summarize_with_sources` returns a `dict` with four keys ([src/search.py:132-145](src/search.py#L132-L145)):
+`search_and_summarize_with_sources` returns a `dict` with four keys ([src/search.py:159-172](src/search.py#L159-L172)):
 
 | Key | Type | Contents |
 |---|---|---|

@@ -57,6 +57,11 @@ class RAGSearch:
         would retrieve irrelevant chunks. This resolves such references
         against the conversation history before retrieval happens.
 
+        Queries that don't actually reference the conversation (greetings,
+        unrelated new questions, anything already standalone) must be left
+        untouched — forcing them to relate to the previous topic produces
+        nonsensical retrieval queries. See the prompt's few-shot examples.
+
         Args:
             query: The user's raw follow-up question.
             history: Capped list of prior {"role", "content"} turns.
@@ -66,14 +71,36 @@ class RAGSearch:
             query if the LLM returns a blank rewrite.
         """
         history_text = self._format_history(history)
-        prompt = f"""Given the conversation history and a follow-up question, rewrite the follow-up question as a standalone question that includes any context needed to understand it (e.g. resolve pronouns like "he", "it", "that" to what they refer to). Output only the rewritten question, nothing else. If the follow-up question is already standalone, return it unchanged.
+        prompt = f"""You rewrite chat messages for a search engine. You are NOT answering the message and you are NOT judging whether it needs prior context to be answered — you are only deciding whether it needs a WORD replaced. Reply with plain text only: never code, never an explanation, never markdown, never a sentence starting with "There is" or "I don't know".
 
-Conversation history:
+If the new message contains a pronoun (he, she, it, they, that, this) or clearly continues the previous topic, replace just the pronoun/reference with what it refers to, using the conversation history. Reply with that one rewritten sentence.
+
+Otherwise — greetings, small talk, or any new question, even one on the same general subject as before — reply with the new message copied exactly, word for word, unchanged. Do this whenever the new message does not contain a pronoun or reference word, even if you don't know the answer to it.
+
+Reply with one sentence only, nothing before or after it.
+
+Conversation:
+User: Who is the CEO of InfoBeans?
+Assistant: The CEO of InfoBeans is Sanjeev Agrawal.
+New message: who is he
+Reply: who is Sanjeev Agrawal
+
+Conversation:
+User: Where is InfoBeans located?
+Assistant: InfoBeans is headquartered in Indore, India.
+New message: good morning
+Reply: good morning
+
+Conversation:
+User: Where is InfoBeans located?
+Assistant: InfoBeans is headquartered in Indore, India.
+New message: who is the CEO
+Reply: who is the CEO
+
+Conversation:
 {history_text}
-
-Follow-up question: {query}
-
-Standalone question:"""
+New message: {query}
+Reply:"""
         logger.info(f"Calling Groq LLM (model={self.llm_model}) to condense follow-up question...")
         start = time.perf_counter()
         response = self.llm.invoke([prompt])
