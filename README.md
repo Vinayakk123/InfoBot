@@ -144,7 +144,7 @@ Each response shows:
 - An expandable **View sources** panel with the source file name, page/row, a heuristic relevance percentage, and a text preview of each retrieved chunk.
 - A running **token usage** total in the sidebar (prompt/completion/total tokens, summed across the saved session).
 
-`![screenshot placeholder](docs/screenshot.png)` — ![alt text](image.png)
+  ![alt text](image.png)
 
 ## Configuration
 
