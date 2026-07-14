@@ -1,0 +1,27 @@
+[project]
+name = "rag-chatbot-ib"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+# NOTE: this list is missing several packages the code actually imports
+# (faiss-cpu, sentence-transformers, langchain-groq, langchain-text-splitters,
+# python-dotenv) — they were installed directly into .venv and were never
+# added here via `uv add`. Run:
+#   uv add faiss-cpu sentence-transformers langchain-groq langchain-text-splitters python-dotenv
+#   uv add --dev ipykernel jupyter jupyterlab notebook pymupdf chromadb
+# to bring pyproject.toml/uv.lock back in sync with reality, then re-run
+# `uv lock`. See requirements.txt / requirements-dev.txt for the full,
+# verified pinned dependency sets derived from the actual running .venv.
+dependencies = [
+    "langchain-community>=0.4.2",
+    "langchain-core>=1.4.8",
+    "pypdf>=6.14.2",
+    "streamlit>=1.38",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.3.0",
+    "pymupdf>=1.28.0",  # notebook/document.ipynb only (PyMuPDFLoader); production uses pypdf
+]

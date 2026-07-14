@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Environment variables / secrets
+.env
+
+# Persisted chat history (runtime state, not source)
+chat_history.json
+
+vector_store*/
+faiss_store/
+*.sqlite3
+*.bin
+*.pkl

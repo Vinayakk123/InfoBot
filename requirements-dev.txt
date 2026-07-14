@@ -1,0 +1,108 @@
+# Dev-only dependencies: notebook exploration (notebook/*.ipynb) and tools
+# not required to run main.py/app.py/streamlit_app.py.
+# Install alongside requirements.txt:  pip install -r requirements.txt -r requirements-dev.txt
+
+# --- Direct dependencies ---
+ipykernel==7.3.0        # Jupyter kernel for notebook/*.ipynb
+jupyter==1.1.1          # notebook authoring/execution
+jupyterlab==4.6.1
+notebook==7.6.0
+chromadb==1.5.9         # alt. vector store prototyped in notebook/pdfloader.ipynb; production uses FAISS (src/vectorstore.py), not this
+pymupdf==1.28.0         # alt. PDF loader (PyMuPDFLoader) tried in notebook/document.ipynb; production uses pypdf's PyPDFLoader instead
+
+# NOTE: notebook/pdfloader.ipynb also imports `cosine_similarity` from
+# scikit-learn, but never calls it — a dead import. No separate pin needed
+# here since scikit-learn is already pulled into requirements.txt as a
+# transitive dependency of sentence-transformers.
+
+# --- Transitive dependencies (pinned for reproducibility; do not hand-edit) ---
+argon2-cffi==25.1.0
+argon2-cffi-bindings==25.1.0
+arrow==1.4.0
+asttokens==3.0.2
+async-lru==2.3.0
+babel==2.18.0
+bcrypt==5.0.0
+beautifulsoup4==4.15.0
+bleach==6.4.0
+build==1.5.1
+cffi==2.1.0
+comm==0.2.3
+debugpy==1.8.21
+decorator==5.3.1
+defusedxml==0.7.1
+durationpy==0.10
+executing==2.2.1
+fastjsonschema==2.21.2
+flatbuffers==25.12.19
+fqdn==1.5.1
+googleapis-common-protos==1.75.0
+grpcio==1.82.1
+importlib_resources==7.1.0
+ipython==9.15.0
+ipython_pygments_lexers==1.1.1
+ipywidgets==8.1.8
+isoduration==20.11.0
+jedi==0.20.0
+json5==0.15.0
+jupyter_builder==1.1.0
+jupyter_client==8.9.1
+jupyter-console==6.6.3
+jupyter_core==5.9.1
+jupyter-events==0.12.1
+jupyter-lsp==2.3.1
+jupyter_server==2.20.0
+jupyter_server_terminals==0.5.4
+jupyterlab_pygments==0.3.0
+jupyterlab_server==2.28.0
+jupyterlab_widgets==3.0.16
+kubernetes==36.0.2
+lark==1.3.1
+matplotlib-inline==0.2.2
+mistune==3.3.3
+mmh3==5.2.1
+nbclient==0.11.0
+nbconvert==7.17.1
+nbformat==5.10.4
+nest-asyncio2==1.7.2
+notebook_shim==0.2.4
+oauthlib==3.3.1
+onnxruntime==1.27.0
+opentelemetry-api==1.43.0
+opentelemetry-exporter-otlp-proto-common==1.43.0
+opentelemetry-exporter-otlp-proto-grpc==1.43.0
+opentelemetry-proto==1.43.0
+opentelemetry-sdk==1.43.0
+opentelemetry-semantic-conventions==0.64b0
+overrides==7.7.0
+pandocfilters==1.5.1
+parso==0.8.7
+platformdirs==4.10.0
+prometheus_client==0.25.0
+prompt_toolkit==3.0.52
+psutil==7.2.2
+pure_eval==0.2.3
+pybase64==1.4.3
+pycparser==3.0
+PyPika==0.51.1
+pyproject_hooks==1.2.0
+python-json-logger==4.1.0
+pywinpty==3.0.5
+pyzmq==27.1.0
+requests-oauthlib==2.0.0
+rfc3339-validator==0.1.4
+rfc3986-validator==0.1.1
+rfc3987-syntax==1.1.0
+Send2Trash==2.1.0
+soupsieve==2.8.4
+stack-data==0.6.3
+terminado==0.18.1
+tinycss2==1.5.1
+tornado==6.5.7
+traitlets==5.15.1
+uri-template==1.3.0
+wcwidth==0.8.2
+webcolors==25.10.0
+webencodings==0.5.1
+websocket-client==1.9.0
+widgetsnbextension==4.0.15
